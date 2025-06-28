@@ -1,0 +1,69 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+    }
+    
+    function isTeacher() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "teacher";
+    }
+    
+    function isStudent() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "student";
+    }
+    
+    function isGateman() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "gateman";
+    }
+    
+    // User collection rules
+    match /users/{userId} {
+      // Anyone can create a user (for registration)
+      // Users can read their own data
+      // Admins can read and write all user data
+      // Teachers can read student data if they're assigned to them
+      allow create;
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin() || 
+        (isTeacher() && resource.data.assignedTeacher.id == request.auth.uid));
+      allow update, delete: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+    }
+    
+    // Leave collection rules
+    match /leaves/{leaveId} {
+      // Students can create leaves and read their own leaves
+      // Teachers can read/update leaves for their assigned students
+      // Gatemen can read approved leaves and update gate status
+      // Admins have full access
+      allow create: if isAuthenticated();
+      
+      allow read: if isAuthenticated() && (
+        isAdmin() || 
+        resource.data.studentId == request.auth.uid || 
+        resource.data.teacherId == request.auth.uid ||
+        (isGateman() && (resource.data.status == "approved" || resource.data.gatemanStatus == "out"))
+      );
+      
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (isTeacher() && resource.data.teacherId == request.auth.uid) ||
+        (isGateman() && resource.data.status == "approved") ||
+        (isStudent() && resource.data.studentId == request.auth.uid && resource.data.status == "pending")
+      );
+      
+      allow delete: if isAuthenticated() && (
+        isAdmin() ||
+        (isStudent() && resource.data.studentId == request.auth.uid && resource.data.status == "pending")
+      );
+    }
+  }
+}
