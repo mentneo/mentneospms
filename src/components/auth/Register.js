@@ -119,7 +119,7 @@ export default function Register() {
               <MenuItem value="student">Student</MenuItem>
               <MenuItem value="teacher">Teacher</MenuItem>
               <MenuItem value="gateman">Gateman</MenuItem>
-             
+              <MenuItem value="admin">Admin</MenuItem>
             </Select>
           </FormControl>
           <Button
