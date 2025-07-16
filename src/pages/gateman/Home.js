@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
+import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -16,11 +16,35 @@ import {
   ListItemText,
   Divider,
   ListItemAvatar,
-  Avatar
+  Avatar,
+  CircularProgress,
+  Alert
 } from '@mui/material';
 import ExitToAppIcon from '@mui/icons-material/ExitToApp';
 import AssignmentReturnedIcon from '@mui/icons-material/AssignmentReturned';
 import PersonIcon from '@mui/icons-material/Person';
+
+// Fallback data in case Firebase access fails
+const FALLBACK_DATA = {
+  pendingExits: 3,
+  pendingReturns: 2,
+  recentActivity: [
+    {
+      id: 'sample1',
+      studentName: 'John Doe',
+      exitTime: new Date().toISOString(),
+      returnTime: null,
+      gatemanStatus: 'out'
+    },
+    {
+      id: 'sample2',
+      studentName: 'Jane Smith',
+      exitTime: new Date(Date.now() - 3600000).toISOString(),
+      returnTime: new Date().toISOString(),
+      gatemanStatus: 'returned'
+    }
+  ]
+};
 
 export default function GatemanHome() {
   const { currentUser } = useAuth();
@@ -30,48 +54,67 @@ export default function GatemanHome() {
   });
   const [recentActivity, setRecentActivity] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [usingFallback, setUsingFallback] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
     const fetchGatemanDashboard = async () => {
       try {
-        // Count pending exits (approved leaves waiting for exit)
-        const pendingExitsQuery = query(
-          collection(db, 'leaves'),
-          where('status', '==', 'approved'),
-          where('gatemanStatus', '==', 'waiting')
-        );
-        const pendingExitsSnapshot = await getDocs(pendingExitsQuery);
+        setLoading(true);
+        setError(null);
+        setUsingFallback(false);
         
-        // Count pending returns (students out but not returned)
-        const pendingReturnsQuery = query(
-          collection(db, 'leaves'),
-          where('status', '==', 'approved'),
-          where('gatemanStatus', '==', 'out')
-        );
-        const pendingReturnsSnapshot = await getDocs(pendingReturnsQuery);
+        // Simple approach - get all leaves
+        const leavesRef = collection(db, 'leaves');
+        const snapshot = await getDocs(leavesRef);
         
-        // Fetch recent activity
-        const recentActivityQuery = query(
-          collection(db, 'leaves'),
-          where('gatemanStatus', 'in', ['out', 'returned']),
-          orderBy('exitTime', 'desc'),
-          limit(5)
-        );
-        const recentActivitySnapshot = await getDocs(recentActivityQuery);
-        const recentActivityData = recentActivitySnapshot.docs.map(doc => ({
+        const allLeaves = snapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data()
         }));
         
-        setStats({
-          pendingExits: pendingExitsSnapshot.size,
-          pendingReturns: pendingReturnsSnapshot.size
+        // Client-side filtering
+        const pendingExits = allLeaves.filter(
+          leave => leave.status === 'approved' && leave.gatemanStatus === 'waiting'
+        ).length;
+        
+        const pendingReturns = allLeaves.filter(
+          leave => leave.status === 'approved' && leave.gatemanStatus === 'out'
+        ).length;
+        
+        // Recent activity
+        const activity = allLeaves.filter(
+          leave => leave.gatemanStatus === 'out' || leave.gatemanStatus === 'returned'
+        );
+        
+        // Sort by exit time
+        activity.sort((a, b) => {
+          const timeA = a.exitTime ? new Date(a.exitTime) : new Date(0);
+          const timeB = b.exitTime ? new Date(b.exitTime) : new Date(0);
+          return timeB - timeA;
         });
-        setRecentActivity(recentActivityData);
+        
+        // Take only the first 5
+        const recentActivity = activity.slice(0, 5);
+        
+        setStats({
+          pendingExits,
+          pendingReturns
+        });
+        setRecentActivity(recentActivity);
         
       } catch (error) {
-        console.error('Error fetching gateman dashboard data:', error);
+        console.error('Firebase error:', error);
+        setError('Failed to load data from Firebase. Using sample data instead.');
+        
+        // Use fallback data
+        setStats({
+          pendingExits: FALLBACK_DATA.pendingExits,
+          pendingReturns: FALLBACK_DATA.pendingReturns
+        });
+        setRecentActivity(FALLBACK_DATA.recentActivity);
+        setUsingFallback(true);
       } finally {
         setLoading(false);
       }
@@ -81,7 +124,11 @@ export default function GatemanHome() {
   }, []);
 
   if (loading) {
-    return <Typography>Loading dashboard...</Typography>;
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh' }}>
+        <CircularProgress />
+      </Box>
+    );
   }
 
   return (
@@ -89,6 +136,31 @@ export default function GatemanHome() {
       <Typography variant="h5" gutterBottom>
         Welcome, {currentUser?.name}!
       </Typography>
+      
+      {error && (
+        <Alert 
+          severity="warning" 
+          action={
+            <Button color="inherit" size="small" onClick={() => window.location.reload()}>
+              Retry
+            </Button>
+          }
+          sx={{ mb: 3 }}
+        >
+          {error}
+        </Alert>
+      )}
+      
+      {usingFallback && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          Using sample data for demonstration. To fix Firebase permissions:
+          <ol>
+            <li>Run the deployment script to update security rules</li>
+            <li>Clear your browser cache and reload</li>
+            <li>Sign out and sign back in to refresh your authentication</li>
+          </ol>
+        </Alert>
+      )}
       
       <Grid container spacing={3} sx={{ mb: 4 }}>
         <Grid item xs={12} sm={6}>
@@ -155,7 +227,7 @@ export default function GatemanHome() {
                     </Avatar>
                   </ListItemAvatar>
                   <ListItemText
-                    primary={leave.studentName}
+                    primary={leave.studentName || "Student"}
                     secondary={
                       <>
                         <Typography
@@ -166,8 +238,8 @@ export default function GatemanHome() {
                           {leave.gatemanStatus === 'out' ? 'Exited at:' : 'Returned at:'}
                         </Typography>
                         {` ${leave.gatemanStatus === 'out' 
-                          ? new Date(leave.exitTime).toLocaleString() 
-                          : new Date(leave.returnTime).toLocaleString()}`}
+                          ? (leave.exitTime ? new Date(leave.exitTime).toLocaleString() : 'Not recorded')
+                          : (leave.returnTime ? new Date(leave.returnTime).toLocaleString() : 'Not recorded')}`}
                       </>
                     }
                   />

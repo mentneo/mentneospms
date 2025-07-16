@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, enableIndexedDbPersistence } from 'firebase/firestore';
+import { getFirestore, enableIndexedDbPersistence, CACHE_SIZE_UNLIMITED } from 'firebase/firestore';
 import { getAnalytics } from 'firebase/analytics';
 
 // Your web app's Firebase configuration
@@ -16,22 +16,60 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
+
+// Initialize services
 export const auth = getAuth(app);
 export const db = getFirestore(app);
-export const analytics = getAnalytics(app);
+export const analytics = typeof window !== 'undefined' ? getAnalytics(app) : null;
 
-// Enable offline persistence (improves performance and reduces errors)
+// Configure Firestore for better live dashboard performance
+const firestoreSettings = {
+  cacheSizeBytes: CACHE_SIZE_UNLIMITED,
+  ignoreUndefinedProperties: true
+};
+
+// Enable offline persistence more safely
 try {
-  enableIndexedDbPersistence(db).catch((err) => {
-    if (err.code === 'failed-precondition') {
-      console.error('Multiple tabs open, persistence can only be enabled in one tab at a time.');
-    } else if (err.code === 'unimplemented') {
-      console.error('The current browser does not support all of the features required to enable persistence.');
-    }
-  });
+  if (typeof window !== 'undefined') {
+    // Only enable persistence in browser environments
+    enableIndexedDbPersistence(db).catch((err) => {
+      if (err.code === 'failed-precondition') {
+        console.warn('Multiple tabs open, persistence can only be enabled in one tab at a time.');
+        // Continue with normal operation, just without persistence
+      } else if (err.code === 'unimplemented') {
+        console.warn('The current browser does not support all of the features required to enable persistence.');
+        // Continue with normal operation, just without persistence
+      }
+    });
+  }
 } catch (error) {
-  console.error("Error enabling persistence:", error);
+  console.warn("Could not enable persistence. Continuing with normal operation:", error);
+  // This won't affect real-time updates, just offline capability
 }
+
+// Helper function for real-time listener setup with error handling
+export const createRealtimeListener = (query, callback, errorCallback) => {
+  try {
+    const unsubscribe = query.onSnapshot(
+      (snapshot) => {
+        const items = [];
+        snapshot.forEach((doc) => {
+          items.push({ id: doc.id, ...doc.data() });
+        });
+        callback(items);
+      },
+      (error) => {
+        console.error("Realtime listener error:", error);
+        if (errorCallback) errorCallback(error);
+      }
+    );
+    return unsubscribe;
+  } catch (error) {
+    console.error("Failed to create realtime listener:", error);
+    if (errorCallback) errorCallback(error);
+    return () => {}; // Return no-op function as fallback
+  }
+};
 
 // Create simpler query functions that avoid complex indexes
 export const simpleQuery = (collectionRef, field, value) => {

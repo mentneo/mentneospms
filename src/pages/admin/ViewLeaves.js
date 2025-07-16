@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, getDocs, where } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import {
   Box,
@@ -13,33 +13,85 @@ import {
   TableRow,
   Chip,
   Tabs,
-  Tab
+  Tab,
+  CircularProgress,
+  Alert,
+  Button
 } from '@mui/material';
 
 export default function ViewLeaves() {
   const [leaves, setLeaves] = useState([]);
   const [loading, setLoading] = useState(true);
   const [currentTab, setCurrentTab] = useState('all');
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    const fetchLeaves = () => {
-      const leavesRef = collection(db, 'leaves');
-      const q = query(leavesRef, orderBy('createdAt', 'desc'));
-      
-      const unsubscribe = onSnapshot(q, (snapshot) => {
+    const fetchLeaves = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        // Simple query to avoid index requirements
+        const leavesRef = collection(db, 'leaves');
+        let leavesQuery;
+        
+        // Try to use real-time listener first
+        try {
+          leavesQuery = query(leavesRef, orderBy('createdAt', 'desc'));
+          
+          const unsubscribe = onSnapshot(leavesQuery, (snapshot) => {
+            const leavesData = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            }));
+            setLeaves(leavesData);
+            setLoading(false);
+          }, (error) => {
+            console.error("Real-time listener error:", error);
+            // Fall back to one-time query without orderBy
+            fetchWithoutOrdering();
+          });
+          
+          return () => unsubscribe();
+        } catch (error) {
+          console.error("Failed to set up real-time listener:", error);
+          fetchWithoutOrdering();
+        }
+      } catch (error) {
+        console.error('Error fetching leaves:', error);
+        setError(error.message || 'Failed to load leave requests');
+        setLoading(false);
+      }
+    };
+    
+    const fetchWithoutOrdering = async () => {
+      try {
+        // Fallback to simple query without orderBy
+        const leavesRef = collection(db, 'leaves');
+        const snapshot = await getDocs(leavesRef);
+        
         const leavesData = snapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data()
         }));
+        
+        // Sort client-side
+        leavesData.sort((a, b) => {
+          const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt);
+          const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt);
+          return dateB - dateA; // descending order
+        });
+        
         setLeaves(leavesData);
         setLoading(false);
-      });
-      
-      return unsubscribe;
+      } catch (error) {
+        console.error('Error in fallback query:', error);
+        setError(error.message || 'Failed to load leave requests');
+        setLoading(false);
+      }
     };
     
-    const unsubscribe = fetchLeaves();
-    return () => unsubscribe();
+    fetchLeaves();
   }, []);
 
   const handleTabChange = (event, newValue) => {
@@ -87,12 +139,36 @@ export default function ViewLeaves() {
       case 'returned':
         return <Chip label="Returned" color="success" variant="outlined" />;
       default:
-        return <Chip label={status} variant="outlined" />;
+        return <Chip label={status || "N/A"} variant="outlined" />;
     }
   };
 
   if (loading) {
-    return <Typography>Loading leave requests...</Typography>;
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', my: 4 }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Box sx={{ my: 2 }}>
+        <Alert 
+          severity="error" 
+          action={
+            <Button color="inherit" size="small" onClick={() => window.location.reload()}>
+              Retry
+            </Button>
+          }
+        >
+          {error}
+        </Alert>
+        <Typography sx={{ mt: 2 }}>
+          This might be due to permission or index issues. Please make sure you have proper Firebase access.
+        </Typography>
+      </Box>
+    );
   }
 
   return (
@@ -133,13 +209,13 @@ export default function ViewLeaves() {
             <TableBody>
               {filteredLeaves.map((leave) => (
                 <TableRow key={leave.id}>
-                  <TableCell>{leave.studentName}</TableCell>
+                  <TableCell>{leave.studentName || "Unknown"}</TableCell>
                   <TableCell>{leave.teacherName || 'Not Assigned'}</TableCell>
                   <TableCell>
                     {leave.type === 'home' ? 'Home Leave' : leave.type === 'sick' ? 'Sick Leave' : 'Other'}
                   </TableCell>
-                  <TableCell>{new Date(leave.fromDate).toLocaleString()}</TableCell>
-                  <TableCell>{new Date(leave.toDate).toLocaleString()}</TableCell>
+                  <TableCell>{leave.fromDate ? new Date(leave.fromDate).toLocaleString() : "N/A"}</TableCell>
+                  <TableCell>{leave.toDate ? new Date(leave.toDate).toLocaleString() : "N/A"}</TableCell>
                   <TableCell>{getStatusBadge(leave.status)}</TableCell>
                   <TableCell>{getGatemanStatusBadge(leave.gatemanStatus)}</TableCell>
                   <TableCell>{leave.teacherRemarks || '-'}</TableCell>

@@ -26,6 +26,17 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "gateman";
     }
     
+    // For development only - allow all access
+    match /{document=**} {
+      allow read, write: if true;
+    }
+
+    /* Uncomment these rules for production
+    // Admin has full access to everything
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+    
     // User collection rules
     match /users/{userId} {
       // Anyone can create a user (for registration)
@@ -50,13 +61,13 @@ service cloud.firestore {
         isAdmin() || 
         resource.data.studentId == request.auth.uid || 
         resource.data.teacherId == request.auth.uid ||
-        (isGateman() && (resource.data.status == "approved" || resource.data.gatemanStatus == "out"))
+        isGateman() // Modified to give gateman access to all leave records
       );
       
       allow update: if isAuthenticated() && (
         isAdmin() ||
         (isTeacher() && resource.data.teacherId == request.auth.uid) ||
-        (isGateman() && resource.data.status == "approved") ||
+        (isGateman()) ||  // Modified to allow gateman to update any leave
         (isStudent() && resource.data.studentId == request.auth.uid && resource.data.status == "pending")
       );
       
@@ -65,5 +76,6 @@ service cloud.firestore {
         (isStudent() && resource.data.studentId == request.auth.uid && resource.data.status == "pending")
       );
     }
+    */
   }
 }

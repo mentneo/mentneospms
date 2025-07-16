@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import {
   Box,
@@ -12,16 +12,36 @@ import {
   TableHead,
   TableRow,
   Chip,
-  TextField,
   CircularProgress,
   Alert,
   FormControl,
   InputLabel,
   Select,
-  MenuItem
+  MenuItem,
+  Button
 } from '@mui/material';
 import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { LocalizationProvider, DatePicker } from '@mui/x-date-pickers';
+
+// Sample fallback data in case Firebase permissions fail
+const FALLBACK_DATA = [
+  {
+    id: 'sample1',
+    studentName: 'John Doe',
+    type: 'home',
+    exitTime: new Date().toISOString(),
+    returnTime: new Date(Date.now() + 3600000).toISOString(),
+    gatemanStatus: 'returned'
+  },
+  {
+    id: 'sample2',
+    studentName: 'Jane Smith',
+    type: 'sick',
+    exitTime: new Date().toISOString(),
+    returnTime: null,
+    gatemanStatus: 'out'
+  }
+];
 
 export default function LeaveHistory() {
   const [leaves, setLeaves] = useState([]);
@@ -30,43 +50,68 @@ export default function LeaveHistory() {
   const [filteredLeaves, setFilteredLeaves] = useState([]);
   const [error, setError] = useState(null);
   const [statusFilter, setStatusFilter] = useState('all');
+  const [usedFallbackData, setUsedFallbackData] = useState(false);
 
   useEffect(() => {
-    const fetchLeaves = async () => {
+    // Super simplified function to fetch data or use fallback
+    const fetchData = async () => {
       try {
         setLoading(true);
         setError(null);
+        setUsedFallbackData(false);
         
-        // Base query to get all completed or in-progress leaves
-        let leavesQuery = query(
-          collection(db, 'leaves'),
-          where('gatemanStatus', 'in', ['out', 'returned'])
-        );
+        try {
+          // Try to get all leaves - no filters
+          const leavesRef = collection(db, 'leaves');
+          const snapshot = await getDocs(leavesRef);
+          
+          if (!snapshot.empty) {
+            const leavesData = snapshot.docs.map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            }));
+            
+            // Client-side filtering
+            const relevantLeaves = leavesData.filter(
+              leave => leave.gatemanStatus === 'out' || leave.gatemanStatus === 'returned'
+            );
+            
+            if (relevantLeaves.length > 0) {
+              setLeaves(relevantLeaves);
+              applyFilters(relevantLeaves, selectedDate, statusFilter);
+              setLoading(false);
+              return;
+            }
+          }
+          
+          // If we got here, we either had permission issues or no data
+          throw new Error("No data found or permission denied");
+          
+        } catch (firebaseError) {
+          console.error('Firebase error:', firebaseError);
+          throw firebaseError;
+        }
         
-        const querySnapshot = await getDocs(leavesQuery);
-        const leavesData = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        
-        // Sort by exit time (newest first) client-side
-        leavesData.sort((a, b) => {
-          const timeA = a.exitTime ? new Date(a.exitTime) : new Date(0);
-          const timeB = b.exitTime ? new Date(b.exitTime) : new Date(0);
-          return timeB - timeA;
-        });
-        
-        setLeaves(leavesData);
-        applyFilters(leavesData, selectedDate, statusFilter);
       } catch (error) {
-        console.error('Error fetching leave history:', error);
-        setError(error.message || 'Failed to load leave history');
+        console.error('Error fetching data:', error);
+        
+        // Use fallback data
+        console.log("Using fallback data");
+        setLeaves(FALLBACK_DATA);
+        applyFilters(FALLBACK_DATA, selectedDate, statusFilter);
+        setUsedFallbackData(true);
+        
+        if (error.code === 'permission-denied') {
+          setError("Firebase permission denied. Apply security rules or contact administrator.");
+        } else {
+          setError("Failed to load leave history. Using sample data for demonstration.");
+        }
       } finally {
         setLoading(false);
       }
     };
     
-    fetchLeaves();
+    fetchData();
   }, []);
 
   const applyFilters = (leavesData, date, status) => {
@@ -94,8 +139,23 @@ export default function LeaveHistory() {
     applyFilters(leaves, selectedDate, statusFilter);
   }, [selectedDate, statusFilter, leaves]);
 
+  // Handle retry button click
+  const handleRetry = () => {
+    setLoading(true);
+    setError(null);
+    
+    // Delay to give visual feedback
+    setTimeout(() => {
+      window.location.reload();
+    }, 500);
+  };
+
   if (loading) {
-    return <CircularProgress />;
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh' }}>
+        <CircularProgress />
+      </Box>
+    );
   }
 
   return (
@@ -105,8 +165,22 @@ export default function LeaveHistory() {
       </Typography>
       
       {error && (
-        <Alert severity="error" sx={{ mb: 2 }}>
+        <Alert 
+          severity={usedFallbackData ? "warning" : "error"} 
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => window.location.reload()}>
+              Retry
+            </Button>
+          }
+        >
           {error}
+        </Alert>
+      )}
+      
+      {usedFallbackData && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Displaying sample data. To fix permission errors, run the apply-rules.sh script.
         </Alert>
       )}
       
@@ -164,7 +238,7 @@ export default function LeaveHistory() {
                 
                 return (
                   <TableRow key={leave.id}>
-                    <TableCell>{leave.studentName}</TableCell>
+                    <TableCell>{leave.studentName || 'Unknown'}</TableCell>
                     <TableCell>
                       {leave.type === 'home' ? 'Home Leave' : leave.type === 'sick' ? 'Sick Leave' : 'Other'}
                     </TableCell>

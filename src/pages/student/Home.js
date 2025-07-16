@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit } from 'firebase/firestore';
 import { db } from '../../firebase/config';
+import { createDashboardListener } from '../../firebase/realtimeUtils';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -16,7 +17,8 @@ import {
   ListItemText,
   Divider,
   Alert,
-  Chip
+  Chip,
+  CircularProgress
 } from '@mui/material';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import HistoryIcon from '@mui/icons-material/History';
@@ -31,67 +33,107 @@ export default function StudentHome() {
   });
   const [recentLeaves, setRecentLeaves] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const fetchStudentDashboard = async () => {
-      try {
-        // Count leaves by status
-        const leavesRef = collection(db, 'leaves');
-        
-        // Pending leaves
-        const pendingQuery = query(
-          leavesRef,
-          where('studentId', '==', currentUser.uid),
-          where('status', '==', 'pending')
-        );
-        const pendingSnapshot = await getDocs(pendingQuery);
-        
-        // Approved leaves
-        const approvedQuery = query(
-          leavesRef,
-          where('studentId', '==', currentUser.uid),
-          where('status', '==', 'approved')
-        );
-        const approvedSnapshot = await getDocs(approvedQuery);
-        
-        // Rejected leaves
-        const rejectedQuery = query(
-          leavesRef,
-          where('studentId', '==', currentUser.uid),
-          where('status', '==', 'rejected')
-        );
-        const rejectedSnapshot = await getDocs(rejectedQuery);
-        
-        // Fetch recent leaves
-        const recentLeavesQuery = query(
-          leavesRef,
-          where('studentId', '==', currentUser.uid),
-          orderBy('createdAt', 'desc'),
-          limit(5)
-        );
-        const recentLeavesSnapshot = await getDocs(recentLeavesQuery);
-        const recentLeavesData = recentLeavesSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        
-        setLeaveStats({
-          pending: pendingSnapshot.size,
-          approved: approvedSnapshot.size,
-          rejected: rejectedSnapshot.size
-        });
-        setRecentLeaves(recentLeavesData);
-        
-      } catch (error) {
-        console.error('Error fetching student dashboard data:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
+    const unsubscribers = [];
     
-    fetchStudentDashboard();
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Create real-time listener for recent leaves
+      const leavesConstraints = [
+        where('studentId', '==', currentUser.uid),
+        orderBy('createdAt', 'desc'),
+        limit(5)
+      ];
+      
+      const leavesUnsubscribe = createDashboardListener(
+        'leaves',
+        leavesConstraints,
+        (data) => {
+          setRecentLeaves(data);
+          
+          // Calculate stats from retrieved data
+          const pending = data.filter(leave => leave.status === 'pending').length;
+          const approved = data.filter(leave => leave.status === 'approved').length;
+          const rejected = data.filter(leave => leave.status === 'rejected').length;
+          
+          setLeaveStats({
+            pending,
+            approved,
+            rejected
+          });
+          
+          setLoading(false);
+        },
+        (err) => {
+          console.error('Error fetching student dashboard data:', err);
+          setError('Failed to load dashboard data. Please try again later.');
+          setLoading(false);
+          
+          // Fallback to basic stats if real-time fails
+          fetchBasicStats();
+        }
+      );
+      
+      unsubscribers.push(leavesUnsubscribe);
+      
+    } catch (error) {
+      console.error('Error setting up dashboard:', error);
+      setError('Failed to set up dashboard. Please try again later.');
+      setLoading(false);
+      
+      // Fallback to basic stats if real-time fails
+      fetchBasicStats();
+    }
+    
+    // Cleanup function
+    return () => {
+      unsubscribers.forEach(unsubscribe => unsubscribe());
+    };
   }, [currentUser]);
+  
+  // Fallback function to get basic stats if real-time fails
+  const fetchBasicStats = async () => {
+    try {
+      const leavesRef = collection(db, 'leaves');
+      
+      // Get count of pending leaves
+      const pendingQuery = query(
+        leavesRef,
+        where('studentId', '==', currentUser.uid),
+        where('status', '==', 'pending')
+      );
+      const pendingSnapshot = await getDocs(pendingQuery);
+      
+      // Get count of approved leaves
+      const approvedQuery = query(
+        leavesRef,
+        where('studentId', '==', currentUser.uid),
+        where('status', '==', 'approved')
+      );
+      const approvedSnapshot = await getDocs(approvedQuery);
+      
+      // Get count of rejected leaves
+      const rejectedQuery = query(
+        leavesRef,
+        where('studentId', '==', currentUser.uid),
+        where('status', '==', 'rejected')
+      );
+      const rejectedSnapshot = await getDocs(rejectedQuery);
+      
+      setLeaveStats({
+        pending: pendingSnapshot.size,
+        approved: approvedSnapshot.size,
+        rejected: rejectedSnapshot.size
+      });
+    } catch (error) {
+      console.error('Error fetching basic stats:', error);
+    }
+  };
 
   // Function to render status badge
   const getStatusBadge = (status) => {
@@ -110,7 +152,11 @@ export default function StudentHome() {
   };
 
   if (loading) {
-    return <Typography>Loading dashboard...</Typography>;
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50vh' }}>
+        <CircularProgress />
+      </Box>
+    );
   }
 
   return (
@@ -118,6 +164,12 @@ export default function StudentHome() {
       <Typography variant="h5" gutterBottom>
         Welcome, {currentUser?.name}!
       </Typography>
+      
+      {error && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+      )}
       
       {!currentUser.assignedTeacher && (
         <Alert severity="warning" sx={{ mb: 3 }}>
